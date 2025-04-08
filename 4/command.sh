@@ -1,0 +1,1 @@
+awk '{print $1, $7}' sample.log | sort | uniq -c

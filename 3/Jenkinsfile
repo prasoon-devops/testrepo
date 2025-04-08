@@ -1,0 +1,82 @@
+pipeline {
+  agent any
+
+  environment {
+    AWS_REGION = "us-east-1"
+    ECR_REPO = "nginx-nonroot"
+    IMAGE_TAG = "latest"
+    ACCOUNT_ID = credentials('aws-account-id') // Jenkins secret text
+    FULL_IMAGE = "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Login to AWS ECR') {
+      steps {
+        withCredentials([[
+          $class: 'AmazonWebServicesCredentialsBinding',
+          credentialsId: 'aws-creds' // IAM user or role with ECR access
+        ]]) {
+          sh '''
+            aws --region $AWS_REGION ecr get-login-password | \
+            docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+          '''
+        }
+      }
+    }
+
+    stage('Build Docker Image') {
+      steps {
+        script {
+          docker.build("${FULL_IMAGE}", ".")
+        }
+      }
+    }
+
+    stage('Security Scan with Trivy') {
+      steps {
+        sh '''
+          if ! command -v trivy &> /dev/null; then
+            echo "Installing Trivy..."
+            wget -qO- https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.50.1_Linux-64bit.tar.gz | tar zxvf - -C /usr/local/bin
+          fi
+          trivy image --exit-code 1 --severity CRITICAL,HIGH ${FULL_IMAGE}
+        '''
+      }
+    }
+
+    stage('Push to ECR') {
+      steps {
+        sh '''
+          docker push ${FULL_IMAGE}
+        '''
+      }
+    }
+
+    stage('Deploy to Kubernetes') {
+      steps {
+        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
+          sh '''
+            export KUBECONFIG=$KUBECONFIG_FILE
+            sed -i "s|image:.*|image: ${FULL_IMAGE}|" nginx-statefulset.yaml
+            kubectl apply -f nginx-statefulset.yaml
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    failure {
+      echo 'Build or deployment failed!'
+    }
+    success {
+      echo 'Image pushed to AWS ECR and deployed to Kubernetes successfully.'
+    }
+  }
+}
