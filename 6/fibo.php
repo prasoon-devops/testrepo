@@ -2,24 +2,19 @@
 
 class EvenFibonacciGenerator
 {
-    private int $prevEven;
-    private int $currEven;
+    private string $prevEven;
+    private string $currEven;
 
     public function __construct()
     {
-        // First two even Fibonacci numbers
-        $this->prevEven = 0;
-        $this->currEven = 2;
+        $this->prevEven = "0";
+        $this->currEven = "2";
     }
 
-    /**
-     * Generate the next even Fibonacci number using the optimized formula.
-     * E(n) = 4 * E(n-1) + E(n-2)
-     */
-    public function next(): int
+    public function next(): string
     {
         $next = $this->currEven;
-        $newEven = 4 * $this->currEven + $this->prevEven;
+        $newEven = bcadd(bcmul("4", $this->currEven), $this->prevEven);
 
         $this->prevEven = $this->currEven;
         $this->currEven = $newEven;
@@ -43,11 +38,11 @@ class EvenFibonacciSumCalculator
         $this->generator = new EvenFibonacciGenerator();
     }
 
-    public function calculate(): int
+    public function calculate(): string
     {
-        $sum = 0;
+        $sum = "0";
         for ($i = 0; $i < $this->count; $i++) {
-            $sum += $this->generator->next();
+            $sum = bcadd($sum, $this->generator->next());
         }
         return $sum;
     }

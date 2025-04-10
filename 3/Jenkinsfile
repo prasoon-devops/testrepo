@@ -2,29 +2,30 @@ pipeline {
   agent any
 
   environment {
-    AWS_REGION = "us-east-1"
-    ECR_REPO = "nginx-nonroot"
-    IMAGE_TAG = "latest"
-    ACCOUNT_ID = credentials('aws-account-id') // Jenkins secret text
-    FULL_IMAGE = "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:${IMAGE_TAG}"
+    AWS_REGION = 'us-east-1'
+    ECR_REPO = 'nginx-app'
+    ACCOUNT_ID = '123456789101'
+    ECR_REGISTRY = "${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+    IMAGE_TAG = "${env.BUILD_NUMBER}"
+    KUBECONFIG = credentials('kubeconfig')
+    DEPLOYMENT_NAME = 'nnginx-headless'
+    SERVICE_NAME = 'nginx-headless'
   }
 
   stages {
+
     stage('Checkout') {
       steps {
         checkout scm
       }
     }
 
-    stage('Login to AWS ECR') {
+    stage('Login to ECR') {
       steps {
-        withCredentials([[
-          $class: 'AmazonWebServicesCredentialsBinding',
-          credentialsId: 'aws-creds' // IAM user or role with ECR access
-        ]]) {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
           sh '''
-            aws --region $AWS_REGION ecr get-login-password | \
-            docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+            aws sts get-caller-identity
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
           '''
         }
       }
@@ -32,51 +33,75 @@ pipeline {
 
     stage('Build Docker Image') {
       steps {
-        script {
-          docker.build("${FULL_IMAGE}", ".")
-        }
+        sh """
+          docker build -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG .
+        """
       }
     }
 
-    stage('Security Scan with Trivy') {
+    stage('Scan with Trivy') {
       steps {
-        sh '''
-          if ! command -v trivy &> /dev/null; then
-            echo "Installing Trivy..."
-            wget -qO- https://github.com/aquasecurity/trivy/releases/latest/download/trivy_0.50.1_Linux-64bit.tar.gz | tar zxvf - -C /usr/local/bin
-          fi
-          trivy image --exit-code 1 --severity CRITICAL,HIGH ${FULL_IMAGE}
-        '''
+        sh """
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image --exit-code 1 --severity CRITICAL,HIGH $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+        """
       }
     }
 
     stage('Push to ECR') {
       steps {
-        sh '''
-          docker push ${FULL_IMAGE}
-        '''
+        sh """
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+        """
       }
     }
 
     stage('Deploy to Kubernetes') {
       steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')]) {
-          sh '''
-            export KUBECONFIG=$KUBECONFIG_FILE
-            sed -i "s|image:.*|image: ${FULL_IMAGE}|" nginx-statefulset.yaml
-            kubectl apply -f nginx-statefulset.yaml
-          '''
+        script {
+          sh """
+            mkdir -p ~/.kube
+            echo "$KUBECONFIG" > ~/.kube/config
+            chmod 600 ~/.kube/config
+
+            sed "s|IMAGE_PLACEHOLDER|$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG|g" k8s/deployment.yaml | kubectl apply -f -
+            kubectl apply -f k8s/service.yaml
+          """
+        }
+      }
+    }
+
+    stage('Sanity Check') {
+      steps {
+        script {
+          echo "🔍 Running post-deployment checks..."
+
+          sh """
+            echo "⏳ Waiting for Pods to be ready..."
+            kubectl rollout status deployment/$DEPLOYMENT_NAME --timeout=60s
+
+            echo "📋 Checking Pod status..."
+            kubectl get pods -l app=$DEPLOYMENT_NAME
+
+            echo "🧪 Running basic HTTP check via port-forward..."
+            POD_NAME=$(kubectl get pods -l app=$DEPLOYMENT_NAME -o jsonpath="{.items[0].metadata.name}")
+            kubectl port-forward $POD_NAME 8080:80 &
+
+            sleep 5
+            curl --fail http://localhost:8080 || (echo "Sanity check failed!" && exit 1)
+            kill %1
+          """
         }
       }
     }
   }
 
   post {
-    failure {
-      echo 'Build or deployment failed!'
-    }
     success {
-      echo 'Image pushed to AWS ECR and deployed to Kubernetes successfully.'
+      echo "✅ Build, scan, deployment and sanity check passed!"
+    }
+    failure {
+      echo "❌ Pipeline failed. Check logs for details."
     }
   }
 }

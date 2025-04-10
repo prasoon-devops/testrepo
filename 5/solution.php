@@ -1,98 +1,83 @@
 <?php
 
-class LogEntry {
-    public string $ip;
-    public string $path;
+class LogAnalyzer
+{
+    private string $logFile;
 
-    public function __construct(string $ip, string $path) {
-        $this->ip = $ip;
-        $this->path = $path;
-    }
-
-    public function getKey(): string {
-        return $this->ip . '|' . $this->path;
-    }
-}
-
-class LogParser {
-    private string $filePath;
-
-    public function __construct(string $filePath) {
-        $this->filePath = $filePath;
-    }
-
-    public function parse(): array {
-        $entries = [];
-
-        if (!file_exists($this->filePath)) {
-            throw new Exception("Log file not found: {$this->filePath}");
+    public function __construct(string $logFile)
+    {
+        if (!file_exists($logFile)) {
+            throw new Exception("Log file not found: $logFile");
         }
+        $this->logFile = $logFile;
+    }
 
-        $handle = fopen($this->filePath, 'r');
-        if (!$handle) {
-            throw new Exception("Failed to open log file.");
-        }
+    public function topIPs(int $limit = 5): void
+    {
+        echo "Top {$limit} IPs:\n";
+        $lines = file($this->logFile);
+        $ips = [];
 
-        while (($line = fgets($handle)) !== false) {
-            // Match IP and request path (e.g., "GET /index.html")
-            if (preg_match('/^(\d+\.\d+\.\d+\.\d+).+?"\w+\s(\/[^ ]*)/', $line, $matches)) {
+        foreach ($lines as $line) {
+            if (preg_match('/^(\S+)/', $line, $matches)) {
                 $ip = $matches[1];
-                $path = $matches[2];
-                $entries[] = new LogEntry($ip, $path);
+                $ips[$ip] = ($ips[$ip] ?? 0) + 1;
             }
         }
 
-        fclose($handle);
-        return $entries;
-    }
-}
-
-class LogAggregator {
-    private array $entries;
-
-    public function __construct(array $entries) {
-        $this->entries = $entries;
+        arsort($ips);
+        foreach (array_slice($ips, 0, $limit, true) as $ip => $count) {
+            echo "$count $ip\n";
+        }
     }
 
-    public function aggregate(): array {
-        $counts = [];
+    public function urlsWith404(): void
+    {
+        echo "\nURLs with 404 Errors:\n";
+        $lines = file($this->logFile);
+        $urls = [];
 
-        foreach ($this->entries as $entry) {
-            $key = $entry->getKey();
-            if (!isset($counts[$key])) {
-                $counts[$key] = 0;
+        foreach ($lines as $line) {
+            if (preg_match('/"[^"]*" 404 \d+/', $line) &&
+                preg_match('/"(\w+) ([^ ]+)/', $line, $matches)) {
+                $url = $matches[2];
+                $urls[$url] = true;
             }
-            $counts[$key]++;
         }
 
-        return $counts;
+        foreach (array_keys($urls) as $url) {
+            echo "$url\n";
+        }
+    }
+
+    public function cleanedLog(): void
+    {
+        echo "\nCleaned Log:\n";
+        $validStatusCodes = ['200', '301', '302', '400', '403', '404', '500', '502', '503'];
+        $lines = file($this->logFile);
+
+        foreach ($lines as $line) {
+            $line = str_replace("\t", ' ', $line);       // Replace tabs with space
+            $line = preg_replace('/\s+/', ' ', $line);    // Collapse multiple spaces
+            $line = trim($line);
+
+            if (empty($line)) continue;
+
+            if (preg_match('/"[^"]*" (\d{3}) /', $line, $matches)) {
+                if (in_array($matches[1], $validStatusCodes)) {
+                    echo "$line\n";
+                }
+            }
+        }
     }
 }
 
-class LogReporter {
-    public static function report(array $aggregated): void {
-        echo str_pad("Count", 8) . str_pad("IP Address", 18) . "Path\n";
-        echo str_repeat("-", 40) . "\n";
-
-        ksort($aggregated); // Sort alphabetically
-
-        foreach ($aggregated as $key => $count) {
-            [$ip, $path] = explode('|', $key);
-            echo str_pad($count, 8) . str_pad($ip, 18) . $path . "\n";
-        }
-    }
-}
-
-// ------------------ MAIN ------------------
-
+// Example usage:
 try {
-    $parser = new LogParser("sample.log");
-    $entries = $parser->parse();
-
-    $aggregator = new LogAggregator($entries);
-    $counts = $aggregator->aggregate();
-
-    LogReporter::report($counts);
+    $analyzer = new LogAnalyzer('access.log');
+    $analyzer->topIPs();
+    $analyzer->urlsWith404();
+    $analyzer->cleanedLog();
 } catch (Exception $e) {
     echo "Error: " . $e->getMessage() . "\n";
 }

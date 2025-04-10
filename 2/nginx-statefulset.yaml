@@ -2,6 +2,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: nginx-headless
+  namespace: nginx-stateful
   labels:
     app: nginx
 spec:
@@ -44,9 +45,21 @@ spec:
           volumeMounts:
             - name: nginx-data
               mountPath: /usr/share/nginx/html  # Serve static files from
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 20
           securityContext:
             runAsUser: 1000  # Match non-root UID used in Dockerfile
-            runAsGroup: 1000
+            runAsGroup: 1000 
             allowPrivilegeEscalation: false
   volumeClaimTemplates:
     - metadata:
